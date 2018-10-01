@@ -6,7 +6,6 @@ import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -17,7 +16,7 @@ import utility.LBFGS;
 import utility.Parallel;
 import cc.mallet.optimize.InvalidOptimizableException;
 import cc.mallet.optimize.Optimizer;
-import cc.mallet.types.MatrixOps;
+import utility.WordVectors;
 
 /**
  * Implementation of the LF-LDA latent feature topic model, using collapsed Gibbs sampling, as
@@ -30,74 +29,20 @@ import cc.mallet.types.MatrixOps;
  * @author Dat Quoc Nguyen
  */
 
-public class LFLDA
+public class LFLDA extends TopicModel
 {
+    private final int[] sumDocTopicCount;
     public double alpha; // Hyper-parameter alpha
     public double beta; // Hyper-parameter alpha
     public double alphaSum; // alpha * numTopics
-    public double betaSum; // beta * vocabularySize
 
-    public int numTopics; // Number of topics
-    public int topWords; // Number of most probable words for each topic
-
-    public double lambda; // Mixture weight value
-    public int numInitIterations;
-    public int numIterations; // Number of EM-style sampling iterations
-
-    public List<List<Integer>> corpus; // Word ID-based corpus
-    public List<List<Integer>> topicAssignments; // Topics assignments for words
-                                                 // in the corpus
-    public int numDocuments; // Number of documents in the corpus
-    public int numWordsInCorpus; // Number of words in the corpus
-
-    public HashMap<String, Integer> word2IdVocabulary; // Vocabulary to get ID
-                                                       // given a word
-    public HashMap<Integer, String> id2WordVocabulary; // Vocabulary to get word
-                                                       // given an ID
-    public int vocabularySize; // The number of word types in the corpus
-
-    // numDocuments * numTopics matrix
-    // Given a document: number of its words assigned to each topic
-    public int[][] docTopicCount;
-    // Number of words in every document
-    public int[] sumDocTopicCount;
-    // numTopics * vocabularySize matrix
-    // Given a topic: number of times a word type generated from the topic by
-    // the Dirichlet multinomial component
-    public int[][] topicWordCountLDA;
-    // Total number of words generated from each topic by the Dirichlet
-    // multinomial component
-    public int[] sumTopicWordCountLDA;
-    // numTopics * vocabularySize matrix
-    // Given a topic: number of times a word type generated from the topic by
-    // the latent feature component
-    public int[][] topicWordCountLF;
-    // Total number of words generated from each topic by the latent feature
-    // component
-    public int[] sumTopicWordCountLF;
-
-    // Double array used to sample a topic
-    public double[] multiPros;
-    // Path to the directory containing the corpus
-    public String folderPath;
-    // Path to the topic modeling corpus
-    public String corpusPath;
-    public String vectorFilePath;
-
-    public double[][] wordVectors; // Vector representations for words
-    public double[][] topicVectors;// Vector representations for topics
-    public int vectorSize; // Number of vector dimensions
-    public double[][] dotProductValues;
-    public double[][] expDotProductValues;
-    public double[] sumExpValues; // Partition function values
-
-    public final double l2Regularizer = 0.01; // L2 regularizer value for learning topic vectors
-    public final double tolerance = 0.05; // Tolerance value for LBFGS convergence
+    public WordVectors wordVectors; // Vector representations for words
 
     public String expName = "LFLDA";
     public String orgExpName = "LFLDA";
     public String tAssignsFilePath = "";
     public int savestep = 0;
+    private int[][] docTopicCount;
 
     public LFLDA(String pathToCorpus, String pathToWordVectorsFile, int inNumTopics,
             double inAlpha, double inBeta, double inLambda, int inNumInitIterations,
@@ -158,51 +103,13 @@ public class LFLDA
 
         System.out.println("Reading topic modeling corpus: " + pathToCorpus);
 
-        word2IdVocabulary = new HashMap<String, Integer>();
-        id2WordVocabulary = new HashMap<Integer, String>();
-        corpus = new ArrayList<List<Integer>>();
-        numDocuments = 0;
-        numWordsInCorpus = 0;
+        wordVectors = new WordVectors(corpusPath, vectorFilePath);
 
-        BufferedReader br = null;
-        try {
-            int indexWord = -1;
-            br = new BufferedReader(new FileReader(pathToCorpus));
-            for (String doc; (doc = br.readLine()) != null;) {
-
-                if (doc.trim().length() == 0)
-                    continue;
-
-                String[] words = doc.trim().split("\\s+");
-                List<Integer> document = new ArrayList<Integer>();
-
-                for (String word : words) {
-                    if (word2IdVocabulary.containsKey(word)) {
-                        document.add(word2IdVocabulary.get(word));
-                    }
-                    else {
-                        indexWord += 1;
-                        word2IdVocabulary.put(word, indexWord);
-                        id2WordVocabulary.put(indexWord, word);
-                        document.add(indexWord);
-                    }
-                }
-
-                numDocuments++;
-                numWordsInCorpus += document.size();
-                corpus.add(document);
-            }
-        }
-        catch (Exception e) {
-            e.printStackTrace();
-        }
-
-        vocabularySize = word2IdVocabulary.size();
-        docTopicCount = new int[numDocuments][numTopics];
-        sumDocTopicCount = new int[numDocuments];
-        topicWordCountLDA = new int[numTopics][vocabularySize];
-        sumTopicWordCountLDA = new int[numTopics];
-        topicWordCountLF = new int[numTopics][vocabularySize];
+        docTopicCount = new int[wordVectors.getNumDocuments()][numTopics];
+        sumDocTopicCount = new int[wordVectors.getNumDocuments()];
+        topicWordCount = new int[numTopics][wordVectors.getVocabularySize()];
+        sumTopicWordCount = new int[numTopics];
+        topicWordCountLF = new int[numTopics][wordVectors.getVocabularySize()];
         sumTopicWordCountLF = new int[numTopics];
 
         multiPros = new double[numTopics * 2];
@@ -211,17 +118,13 @@ public class LFLDA
         }
 
         alphaSum = numTopics * alpha;
-        betaSum = vocabularySize * beta;
+        betaSum = wordVectors.getVocabularySize() * beta;
 
-        readWordVectorsFile(vectorFilePath);
-        topicVectors = new double[numTopics][vectorSize];
-        dotProductValues = new double[numTopics][vocabularySize];
-        expDotProductValues = new double[numTopics][vocabularySize];
+        topicVectors = new double[numTopics][wordVectors.getVectorSize()];
+        dotProductValues = new double[numTopics][wordVectors.getVocabularySize()];
+        expDotProductValues = new double[numTopics][wordVectors.getVocabularySize()];
         sumExpValues = new double[numTopics];
 
-        System.out
-                .println("Corpus size: " + numDocuments + " docs, " + numWordsInCorpus + " words");
-        System.out.println("Vocabuary size: " + vocabularySize);
         System.out.println("Number of topics: " + numTopics);
         System.out.println("alpha: " + alpha);
         System.out.println("beta: " + beta);
@@ -239,58 +142,17 @@ public class LFLDA
 
     }
 
-    public void readWordVectorsFile(String pathToWordVectorsFile)
-        throws Exception
-    {
-        System.out.println("Reading word vectors from word-vectors file " + pathToWordVectorsFile
-                + "...");
-
-        BufferedReader br = null;
-        try {
-            br = new BufferedReader(new FileReader(pathToWordVectorsFile));
-            String[] elements = br.readLine().trim().split("\\s+");
-            vectorSize = elements.length - 1;
-            wordVectors = new double[vocabularySize][vectorSize];
-            String word = elements[0];
-            if (word2IdVocabulary.containsKey(word)) {
-                for (int j = 0; j < vectorSize; j++) {
-                    wordVectors[word2IdVocabulary.get(word)][j] = new Double(elements[j + 1]);
-                }
-            }
-            for (String line; (line = br.readLine()) != null;) {
-                elements = line.trim().split("\\s+");
-                word = elements[0];
-                if (word2IdVocabulary.containsKey(word)) {
-                    for (int j = 0; j < vectorSize; j++) {
-                        wordVectors[word2IdVocabulary.get(word)][j] = new Double(elements[j + 1]);
-                    }
-                }
-            }
-        }
-        catch (Exception e) {
-            e.printStackTrace();
-        }
-
-        for (int i = 0; i < vocabularySize; i++) {
-            if (MatrixOps.absNorm(wordVectors[i]) == 0.0) {
-                System.out.println("The word \"" + id2WordVocabulary.get(i)
-                        + "\" doesn't have a corresponding vector!!!");
-                throw new Exception();
-            }
-        }
-    }
-
     public void initialize()
         throws IOException
     {
         System.out.println("Randomly initialzing topic assignments ...");
         topicAssignments = new ArrayList<List<Integer>>();
 
-        for (int docId = 0; docId < numDocuments; docId++) {
+        for (int docId = 0; docId < wordVectors.getNumDocuments(); docId++) {
             List<Integer> topics = new ArrayList<Integer>();
-            int docSize = corpus.get(docId).size();
+            int docSize = wordVectors.getCorpus().get(docId).size();
             for (int j = 0; j < docSize; j++) {
-                int wordId = corpus.get(docId).get(j);
+                int wordId = wordVectors.getCorpus().get(docId).get(j);
 
                 int subtopic = FuncUtils.nextDiscrete(multiPros);
                 int topic = subtopic % numTopics;
@@ -299,8 +161,8 @@ public class LFLDA
                     sumTopicWordCountLF[topic] += 1;
                 }
                 else {// Generated from the Dirichlet multinomial component
-                    topicWordCountLDA[topic][wordId] += 1;
-                    sumTopicWordCountLDA[topic] += 1;
+                    topicWordCount[topic][wordId] += 1;
+                    sumTopicWordCount[topic] += 1;
                 }
                 docTopicCount[docId][topic] += 1;
                 sumDocTopicCount[docId] += 1;
@@ -326,7 +188,7 @@ public class LFLDA
                 String[] strTopics = line.trim().split("\\s+");
                 List<Integer> topics = new ArrayList<Integer>();
                 for (int j = 0; j < strTopics.length; j++) {
-                    int wordId = corpus.get(docId).get(j);
+                    int wordId = wordVectors.getCorpus().get(docId).get(j);
 
                     int subtopic = new Integer(strTopics[j]);
                     int topic = subtopic % numTopics;
@@ -336,8 +198,8 @@ public class LFLDA
                         sumTopicWordCountLF[topic] += 1;
                     }
                     else {// Generated from the Dirichlet multinomial component
-                        topicWordCountLDA[topic][wordId] += 1;
-                        sumTopicWordCountLDA[topic] += 1;
+                        topicWordCount[topic][wordId] += 1;
+                        sumTopicWordCount[topic] += 1;
                     }
                     docTopicCount[docId][topic] += 1;
                     sumDocTopicCount[docId] += 1;
@@ -349,7 +211,7 @@ public class LFLDA
                 docId++;
             }
 
-            if ((docId != numDocuments) || (numWords != numWordsInCorpus)) {
+            if ((docId != wordVectors.getNumDocuments()) || (numWords != wordVectors.getNumWordsInCorpus())) {
                 System.out
                         .println("The topic modeling corpus and topic assignment file are not consistent!!!");
                 throw new Exception();
@@ -399,8 +261,8 @@ public class LFLDA
     {
         System.out.println("\t\tEstimating topic vectors ...");
         sumExpValues = new double[numTopics];
-        dotProductValues = new double[numTopics][vocabularySize];
-        expDotProductValues = new double[numTopics][vocabularySize];
+        dotProductValues = new double[numTopics][wordVectors.getVocabularySize()];
+        expDotProductValues = new double[numTopics][wordVectors.getVocabularySize()];
 
         Parallel.loop(numTopics, new Parallel.LoopInt()
         {
@@ -413,7 +275,7 @@ public class LFLDA
                     double l2Value = l2Regularizer * rate;
                     try {
                         TopicVectorOptimizer optimizer = new TopicVectorOptimizer(
-                                topicVectors[topic], topicWordCountLF[topic], wordVectors, l2Value);
+                                topicVectors[topic], topicWordCountLF[topic], wordVectors.getWordVectors(), l2Value);
 
                         Optimizer gd = new LBFGS(optimizer, tolerance);
                         gd.optimize(600);
@@ -424,11 +286,11 @@ public class LFLDA
 
                         if (sumExpValues[topic] == 0 || Double.isInfinite(sumExpValues[topic])) {
                             double max = -1000000000.0;
-                            for (int index = 0; index < vocabularySize; index++) {
+                            for (int index = 0; index < wordVectors.getVocabularySize(); index++) {
                                 if (dotProductValues[topic][index] > max)
                                     max = dotProductValues[topic][index];
                             }
-                            for (int index = 0; index < vocabularySize; index++) {
+                            for (int index = 0; index < wordVectors.getVocabularySize(); index++) {
                                 expDotProductValues[topic][index] = Math
                                         .exp(dotProductValues[topic][index] - max);
                                 sumExpValues[topic] += expDotProductValues[topic][index];
@@ -447,11 +309,11 @@ public class LFLDA
 
     public void sampleSingleIteration()
     {
-        for (int dIndex = 0; dIndex < numDocuments; dIndex++) {
-            int docSize = corpus.get(dIndex).size();
+        for (int dIndex = 0; dIndex < wordVectors.getNumDocuments(); dIndex++) {
+            int docSize = wordVectors.getCorpus().get(dIndex).size();
             for (int wIndex = 0; wIndex < docSize; wIndex++) {
                 // Get current word
-                int word = corpus.get(dIndex).get(wIndex);// wordID
+                int word = wordVectors.getCorpus().get(dIndex).get(wIndex);// wordID
                 int subtopic = topicAssignments.get(dIndex).get(wIndex);
                 int topic = subtopic % numTopics;
 
@@ -461,8 +323,8 @@ public class LFLDA
                     sumTopicWordCountLF[topic] -= 1;
                 }
                 else {
-                    topicWordCountLDA[topic][word] -= 1;
-                    sumTopicWordCountLDA[topic] -= 1;
+                    topicWordCount[topic][word] -= 1;
+                    sumTopicWordCount[topic] -= 1;
                 }
 
                 // Sample a pair of topic z and binary indicator variable s
@@ -472,8 +334,8 @@ public class LFLDA
                             * expDotProductValues[tIndex][word] / sumExpValues[tIndex];
 
                     multiPros[tIndex + numTopics] = (docTopicCount[dIndex][tIndex] + alpha)
-                            * (1 - lambda) * (topicWordCountLDA[tIndex][word] + beta)
-                            / (sumTopicWordCountLDA[tIndex] + betaSum);
+                            * (1 - lambda) * (topicWordCount[tIndex][word] + beta)
+                            / (sumTopicWordCount[tIndex] + betaSum);
 
                 }
                 subtopic = FuncUtils.nextDiscrete(multiPros);
@@ -485,8 +347,8 @@ public class LFLDA
                     sumTopicWordCountLF[topic] += 1;
                 }
                 else {
-                    topicWordCountLDA[topic][word] += 1;
-                    sumTopicWordCountLDA[topic] += 1;
+                    topicWordCount[topic][word] += 1;
+                    sumTopicWordCount[topic] += 1;
                 }
                 // Update topic assignments
                 topicAssignments.get(dIndex).set(wIndex, subtopic);
@@ -496,10 +358,10 @@ public class LFLDA
 
     public void sampleSingleInitialIteration()
     {
-        for (int dIndex = 0; dIndex < numDocuments; dIndex++) {
-            int docSize = corpus.get(dIndex).size();
+        for (int dIndex = 0; dIndex < wordVectors.getNumDocuments(); dIndex++) {
+            int docSize = wordVectors.getCorpus().get(dIndex).size();
             for (int wIndex = 0; wIndex < docSize; wIndex++) {
-                int word = corpus.get(dIndex).get(wIndex);// wordID
+                int word = wordVectors.getCorpus().get(dIndex).get(wIndex);// wordID
                 int subtopic = topicAssignments.get(dIndex).get(wIndex);
                 int topic = subtopic % numTopics;
 
@@ -509,8 +371,8 @@ public class LFLDA
                     sumTopicWordCountLF[topic] -= 1;
                 }
                 else { // LDA(w|t) + LDA(t|d)
-                    topicWordCountLDA[topic][word] -= 1;
-                    sumTopicWordCountLDA[topic] -= 1;
+                    topicWordCount[topic][word] -= 1;
+                    sumTopicWordCount[topic] -= 1;
                 }
 
                 // Sample a pair of topic z and binary indicator variable s
@@ -521,8 +383,8 @@ public class LFLDA
                             / (sumTopicWordCountLF[tIndex] + betaSum);
 
                     multiPros[tIndex + numTopics] = (docTopicCount[dIndex][tIndex] + alpha)
-                            * (1 - lambda) * (topicWordCountLDA[tIndex][word] + beta)
-                            / (sumTopicWordCountLDA[tIndex] + betaSum);
+                            * (1 - lambda) * (topicWordCount[tIndex][word] + beta)
+                            / (sumTopicWordCount[tIndex] + betaSum);
 
                 }
                 subtopic = FuncUtils.nextDiscrete(multiPros);
@@ -534,8 +396,8 @@ public class LFLDA
                     sumTopicWordCountLF[topic] += 1;
                 }
                 else {
-                    topicWordCountLDA[topic][word] += 1;
-                    sumTopicWordCountLDA[topic] += 1;
+                    topicWordCount[topic][word] += 1;
+                    sumTopicWordCount[topic] += 1;
                 }
                 // Update topic assignments
                 topicAssignments.get(dIndex).set(wIndex, subtopic);
@@ -572,8 +434,8 @@ public class LFLDA
     {
         BufferedWriter writer = new BufferedWriter(new FileWriter(folderPath + expName
                 + ".vocabulary"));
-        for (String word : word2IdVocabulary.keySet()) {
-            writer.write(word + " " + word2IdVocabulary.get(word) + "\n");
+        for (String word : wordVectors.getWord2IdVocabulary().keySet()) {
+            writer.write(word + " " + wordVectors.getWord2IdVocabulary().get(word) + "\n");
         }
         writer.close();
     }
@@ -583,10 +445,10 @@ public class LFLDA
     {
         BufferedWriter writer = new BufferedWriter(new FileWriter(folderPath + expName
                 + ".IDcorpus"));
-        for (int dIndex = 0; dIndex < numDocuments; dIndex++) {
-            int docSize = corpus.get(dIndex).size();
+        for (int dIndex = 0; dIndex < wordVectors.getNumDocuments(); dIndex++) {
+            int docSize = wordVectors.getCorpus().get(dIndex).size();
             for (int wIndex = 0; wIndex < docSize; wIndex++) {
-                writer.write(corpus.get(dIndex).get(wIndex) + " ");
+                writer.write(wordVectors.getCorpus().get(dIndex).get(wIndex) + " ");
             }
             writer.write("\n");
         }
@@ -598,8 +460,8 @@ public class LFLDA
     {
         BufferedWriter writer = new BufferedWriter(new FileWriter(folderPath + expName
                 + ".topicAssignments"));
-        for (int dIndex = 0; dIndex < numDocuments; dIndex++) {
-            int docSize = corpus.get(dIndex).size();
+        for (int dIndex = 0; dIndex < wordVectors.getNumDocuments(); dIndex++) {
+            int docSize = wordVectors.getCorpus().get(dIndex).size();
             for (int wIndex = 0; wIndex < docSize; wIndex++) {
                 writer.write(topicAssignments.get(dIndex).get(wIndex) + " ");
             }
@@ -614,7 +476,7 @@ public class LFLDA
         BufferedWriter writer = new BufferedWriter(new FileWriter(folderPath + expName
                 + ".topicVectors"));
         for (int i = 0; i < numTopics; i++) {
-            for (int j = 0; j < vectorSize; j++)
+            for (int j = 0; j < wordVectors.getVectorSize(); j++)
                 writer.write(topicVectors[i][j] + " ");
             writer.write("\n");
         }
@@ -628,14 +490,14 @@ public class LFLDA
                 + ".topWords"));
 
         for (int tIndex = 0; tIndex < numTopics; tIndex++) {
-            writer.write("Topic" + new Integer(tIndex) + ":");
+            writer.write("Topic" + tIndex + ":");
 
             Map<Integer, Double> topicWordProbs = new TreeMap<Integer, Double>();
-            for (int wIndex = 0; wIndex < vocabularySize; wIndex++) {
+            for (int wIndex = 0; wIndex < wordVectors.getVocabularySize(); wIndex++) {
 
                 double pro = lambda * expDotProductValues[tIndex][wIndex] / sumExpValues[tIndex]
-                        + (1 - lambda) * (topicWordCountLDA[tIndex][wIndex] + beta)
-                        / (sumTopicWordCountLDA[tIndex] + betaSum);
+                        + (1 - lambda) * (topicWordCount[tIndex][wIndex] + beta)
+                        / (sumTopicWordCount[tIndex] + betaSum);
 
                 topicWordProbs.put(wIndex, pro);
             }
@@ -645,7 +507,7 @@ public class LFLDA
             int count = 0;
             for (Integer index : mostLikelyWords) {
                 if (count < topWords) {
-                    writer.write(" " + id2WordVocabulary.get(index));
+                    writer.write(" " + wordVectors.getId2WordVocabulary().get(index));
                     count += 1;
                 }
                 else {
@@ -662,9 +524,9 @@ public class LFLDA
     {
         BufferedWriter writer = new BufferedWriter(new FileWriter(folderPath + expName + ".phi"));
         for (int t = 0; t < numTopics; t++) {
-            for (int w = 0; w < vocabularySize; w++) {
+            for (int w = 0; w < wordVectors.getVocabularySize(); w++) {
                 double pro = lambda * expDotProductValues[t][w] / sumExpValues[t] + (1 - lambda)
-                        * (topicWordCountLDA[t][w] + beta) / (sumTopicWordCountLDA[t] + betaSum);
+                        * (topicWordCount[t][w] + beta) / (sumTopicWordCount[t] + betaSum);
                 writer.write(pro + " ");
             }
             writer.write("\n");
@@ -677,7 +539,7 @@ public class LFLDA
     {
         BufferedWriter writer = new BufferedWriter(new FileWriter(folderPath + expName + ".theta"));
 
-        for (int i = 0; i < numDocuments; i++) {
+        for (int i = 0; i < wordVectors.getNumDocuments(); i++) {
             for (int j = 0; j < numTopics; j++) {
                 double pro = (docTopicCount[i][j] + alpha) / (sumDocTopicCount[i] + alphaSum);
                 writer.write(pro + " ");

@@ -14,9 +14,7 @@ import cc.mallet.types.MatrixOps;
  * @author Dat Quoc Nguyen
  */
 
-public class TopicVectorOptimizer
-	implements Optimizable.ByGradientValue
-{
+public class TopicVectorOptimizer implements Optimizable.ByGradientValue {
 	// Number of times a word type assigned to the topic
 	int[] wordCount;
 	int totalCount; // Total number of words assigned to the topic
@@ -42,15 +40,13 @@ public class TopicVectorOptimizer
 		l2Constant = inL2Constant;
 
 		topicVector = new double[vectorSize];
-		System
-			.arraycopy(inTopicVector, 0, topicVector, 0, inTopicVector.length);
+		System.arraycopy(inTopicVector, 0, topicVector, 0, inTopicVector.length);
 
 		wordCount = new int[vocaSize];
 		System.arraycopy(inWordCount, 0, wordCount, 0, vocaSize);
 		wordVectors = new double[vocaSize][vectorSize];
 		for (int w = 0; w < vocaSize; w++)
-			System
-				.arraycopy(inWordVectors[w], 0, wordVectors[w], 0, vectorSize);
+			System.arraycopy(inWordVectors[w], 0, wordVectors[w], 0, vectorSize);
 
 		totalCount = 0;
 		for (int w = 0; w < vocaSize; w++) {
@@ -68,39 +64,34 @@ public class TopicVectorOptimizer
 		expDotProductValues = new double[vocaSize];
 	}
 
-	@Override
 	public int getNumParameters()
 	{
 		return vectorSize;
 	}
 
-	@Override
-	public void getParameters(double[] buffer)
-	{
-		for (int i = 0; i < vectorSize; i++)
-			buffer[i] = topicVector[i];
-	}
+	public void getParameters(double[] buffer) {
+        if (buffer.length > 0) {
+            for (int i = 0; i < vectorSize; i++)
+                buffer[i] = topicVector[i];
+        }
+    }
 
-	@Override
 	public double getParameter(int index)
 	{
 		return topicVector[index];
 	}
 
-	@Override
 	public void setParameters(double[] params)
 	{
 		for (int i = 0; i < params.length; i++)
 			topicVector[i] = params[i];
 	}
 
-	@Override
 	public void setParameter(int index, double value)
 	{
 		topicVector[index] = value;
 	}
 
-	@Override
 	public void getValueGradient(double[] buffer)
 	{
 		double partitionFuncValue = computePartitionFunction(dotProductValues,
@@ -120,7 +111,6 @@ public class TopicVectorOptimizer
 		}
 	}
 
-	@Override
 	public double getValue()
 	{
 		double logPartitionFuncValue = Math.log(computePartitionFunction(
